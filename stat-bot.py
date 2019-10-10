@@ -3,6 +3,7 @@ import random
 import discord
 import redis
 from time import localtime, strftime
+from enum import Enum
 from discord import VoiceChannel
 from discord import CategoryChannel
 from discord import DMChannel
@@ -19,6 +20,15 @@ r_local.set("startup", strftime("%a, %d %b %Y %H:%M:%S", localtime()))
 
 list_msg_format = "* %s: %d\n"
 
+class StatType(Enum):
+    EMOTE = 'emotes'
+    MESSAGE = 'messages'
+
+def get_stat(arg):
+    if arg in ('msg', 'message', 'msgs', 'messages', 'm'):
+        return StatType.MESSAGE
+    return StatType.EMOTE
+
 @bot.event
 async def on_ready():
     print("Stat-bot ready!")
@@ -27,13 +37,13 @@ async def on_ready():
 
 @bot.command(name='random-user')
 async def random_user(ctx):
-    with ctx.message.channel.typing():
+    async with ctx.message.channel.typing():
         print("Picking random user from channel: %s" % ctx.message.channel)
         await ctx.send(random.choice(ctx.message.channel.members))
 
 @bot.command(name='random-emote')
 async def random_emote(ctx):
-    with ctx.message.channel.typing():
+    async with ctx.message.channel.typing():
         print("Picking random emote!")
         await ctx.send(random.choice(ctx.guild.emojis))
 
@@ -47,19 +57,21 @@ async def send_emote_usage(emotes, ctx):
     await ctx.send(msg)
 
 @bot.command(name='get-stats')
-async def get_stats(ctx, user=None):
-    with ctx.message.channel.typing():
+async def get_stats(ctx, stat: get_stat=StatType.EMOTE, user=None):
+    async with ctx.message.channel.typing():
         if len(ctx.message.mentions) == 0:
             print("Getting global stats")
-            result = r_local.hgetall("emotes")
+            result = r_local.hgetall(stat.value)
             await send_emote_usage(result, ctx)
         else:
             for member in ctx.message.mentions:
                 print("Getting member stats for: ", member.id)
-                result = r_local.hgetall(member.id)
+                result = r_local.hgetall(str(member.id)+":"+stat.value)
                 await send_emote_usage(result, ctx)
 
 async def process_message_reactions(message):
+    r_local.hincrby(str(message.author.id)+":"+StatType.MESSAGE.value, message.channel.name)
+    r_local.hincrby(StatType.MESSAGE.value, message.channel.name)
     for reaction in message.reactions:
         if reaction.custom_emoji:
             users = await reaction.users().flatten()
@@ -67,9 +79,9 @@ async def process_message_reactions(message):
             for user in users:
                 if not user.bot:
                     count += 1
-                    r_local.hincrby(user.id, reaction.emoji.name)
+                    r_local.hincrby(str(user.id)+":"+StatType.EMOTE.value, reaction.emoji.name)
             if count != 0:
-                r_local.hincrby("emotes", reaction.emoji.name, count)
+                r_local.hincrby(StatType.EMOTE.value, reaction.emoji.name, count)
 
 async def process_channel(channel, limit=None):
     most_recent_message = None
@@ -97,7 +109,7 @@ async def store_stats(ctx):
             if hasattr(channel, 'history'):
                 print("Processing messages in channel: %s" % channel)
                 await ctx.send("Processing messages in channel: %s" % channel)
-                process_channel(channel)
+                await process_channel(channel)
     await ctx.send("Processed all messages!")
 
 @bot.command(name='add-stats')
@@ -123,7 +135,7 @@ async def add_stats(ctx):
                         print("Most recent message id: %d" % most_recent_message.id)
                         r_local.hset("most_recent", channel.id, most_recent_message.id)
                 else:
-                    process_channel(channel)
+                    await process_channel(channel)
     await ctx.send("Processed all messages!")
 
 @bot.command(name='calc-stats')
