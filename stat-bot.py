@@ -12,8 +12,6 @@ from operator import itemgetter
 
 token = os.getenv('statToken')
 
-excluded_channel_types = [VoiceChannel, CategoryChannel, DMChannel]
-
 bot = commands.Bot(command_prefix='~')
 
 r_local = redis.StrictRedis(decode_responses=True)
@@ -39,30 +37,51 @@ async def random_emote(ctx):
         print("Picking random emote!")
         await ctx.send(random.choice(ctx.guild.emojis))
 
+async def send_emote_usage(emotes, ctx):
+    emotes = dict([key, int(val)] for key, val in emotes.items())
+    msg = "```"
+    for emote, count in sorted(emotes.items(), key=itemgetter(1), reverse=True):
+        msg += list_msg_format % (emote, int(count))
+    msg += "```"
+    print("Result msg: ", msg)
+    await ctx.send(msg)
+
 @bot.command(name='get-stats')
 async def get_stats(ctx, user=None):
     with ctx.message.channel.typing():
         if len(ctx.message.mentions) == 0:
             print("Getting global stats")
             result = r_local.hgetall("emotes")
-            result = dict([key, int(val)] for key, val in result.items())
-            msg = "```"
-            for emote, count in sorted(result.items(), key=itemgetter(1), reverse=True):
-                msg += list_msg_format % (emote, int(count))
-            msg += "```"
-            print("Result msg: ", msg)
-            await ctx.send(msg)
+            await send_emote_usage(result, ctx)
         else:
             for member in ctx.message.mentions:
                 print("Getting member stats for: ", member.id)
                 result = r_local.hgetall(member.id)
-                result = dict([key, int(val)] for key, val in result.items())
-                msg = "```"
-                for emote, count in sorted(result.items(), key=itemgetter(1), reverse=True):
-                    msg += list_msg_format % (emote, int(count))
-                msg += "```"
-                print("Result msg: ", msg)
-                await ctx.send(msg)
+                await send_emote_usage(result, ctx)
+
+async def process_message_reactions(message):
+    for reaction in message.reactions:
+        if reaction.custom_emoji:
+            users = await reaction.users().flatten()
+            count = 0
+            for user in users:
+                if not user.bot:
+                    count += 1
+                    r_local.hincrby(user.id, reaction.emoji.name)
+            if count != 0:
+                r_local.hincrby("emotes", reaction.emoji.name, count)
+
+async def process_channel(channel, limit=None):
+    most_recent_message = None
+    async for message in channel.history(limit=limit):
+        if not most_recent_message:
+            most_recent_message = message
+        elif message.created_at > most_recent_message.created_at:
+            most_recent_message = message
+        await process_message_reactions(message)
+    if most_recent_message:
+        print("Most recent message id: %d" % most_recent_message.id)
+        r_local.hset("most_recent", channel.id, most_recent_message.id)
 
 @bot.command(name='store-stats')
 @has_role("Bot Admin")
@@ -78,24 +97,7 @@ async def store_stats(ctx):
             if hasattr(channel, 'history'):
                 print("Processing messages in channel: %s" % channel)
                 await ctx.send("Processing messages in channel: %s" % channel)
-                most_recent_msg = None
-                async for message in channel.history(limit=None):
-                    if not most_recent_msg:
-                        most_recent_msg = message
-                    elif message.created_at > most_recent_msg.created_at:
-                        most_recent_msg = message
-                    for reaction in message.reactions:
-                        if reaction.custom_emoji:
-                            users = await reaction.users().flatten()
-                            count = 0
-                            for user in users:
-                                if not user.bot:
-                                    count += 1
-                                    r_local.hincrby(user.id, reaction.emoji.name)
-                            if count != 0:
-                                r_local.hincrby("emotes", reaction.emoji.name, count)
-                print("Most recent message id: %d" % most_recent_msg.id)
-                r_local.hset("most_recent", channel.id, most_recent_msg.id)
+                process_channel(channel)
     await ctx.send("Processed all messages!")
 
 @bot.command(name='add-stats')
@@ -116,54 +118,13 @@ async def add_stats(ctx):
                             most_recent_message = message
                         elif message.created_at > most_recent_message.created_at:
                             most_recent_message = message
-                        for reaction in message.reactions:
-                            if reaction.custom_emoji:
-                                users = await reaction.users().flatten()
-                                count = 0
-                                for user in users:
-                                    if not user.bot:
-                                        count += 1
-                                        r_local.hincrby(user.id, reaction.emoji.name)
-                                if count != 0:
-                                    r_local.hincrby("emotes", reaction.emoji.name, count)
+                        await process_message_reactions(message)
                     if most_recent_message:
                         print("Most recent message id: %d" % most_recent_message.id)
                         r_local.hset("most_recent", channel.id, most_recent_message.id)
                 else:
-                    most_recent_message = None
-                    async for message in channel.history(limit=None):
-                        if not most_recent_message:
-                            most_recent_message = message
-                        elif message.created_at > most_recent_message.created_at:
-                            most_recent_message = message
-                        for reaction in message.reactions:
-                            if reaction.custom_emoji:
-                                users = await reaction.users().flatten()
-                                count = 0
-                                for user in users:
-                                    if not user.bot:
-                                        count += 1
-                                        r_local.hincrby(user.id, reaction.emoji.name)
-                                if count != 0:
-                                    r_local.hincrby("emotes", reaction.emoji.name, count)
-                    if most_recent_message:
-                        print("Most recent message id: %d" % most_recent_message.id)
-                        r_local.hset("most_recent", channel.id, most_recent_message.id)
+                    process_channel(channel)
     await ctx.send("Processed all messages!")
-                
-
-@random_user.error
-@random_emote.error
-@get_stats.error
-@add_stats.error
-@store_stats.error
-async def store_stats_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("You don't have permission for this command!")
-    elif isinstance(error, commands.MissingRole):
-        await ctx.send("You aren't the proper role for this command!")
-    else:
-        await ctx.send("Error occurred processing your request : %s"%str(error))
 
 @bot.command(name='calc-stats')
 async def calc_stats(ctx, msg_limit=1000, response_size=50):
@@ -171,7 +132,7 @@ async def calc_stats(ctx, msg_limit=1000, response_size=50):
         print("Starting reaction calculation")
         dict_of_reacts = {}
         for channel in ctx.guild.channels:
-            if type(channel) not in excluded_channel_types:
+            if hasattr(channel, 'history'):
                 print("Processing messages for channel: %s" % channel)
                 async for message in channel.history(limit=msg_limit):
                     for reaction in message.reactions:
@@ -198,4 +159,18 @@ async def calc_stats(ctx, msg_limit=1000, response_size=50):
         await ctx.send(mssage+"```")
     print("Completed stats calculation!")
             
+@random_user.error
+@random_emote.error
+@get_stats.error
+@add_stats.error
+@store_stats.error
+@calc_stats.error
+async def store_stats_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("You don't have permission for this command!")
+    elif isinstance(error, commands.MissingRole):
+        await ctx.send("You aren't the proper role for this command!")
+    else:
+        await ctx.send("Error occurred processing your request : %s"%str(error))
+
 bot.run(token)
