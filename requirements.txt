@@ -9,7 +9,7 @@ charset-normalizer==2.0.10
 Deprecated==1.2.13
 discord.py==1.7.3
 frozenlist==1.2.0
-idna==3.3
+idna==3.7
 importlib-metadata==4.10.0
 multidict==5.2.0
 packaging==21.3
