@@ -1,5 +1,6 @@
 import os
 import random
+import logging
 import discord
 import redis
 from time import localtime, strftime
@@ -12,6 +13,12 @@ from discord.ext.commands import has_role
 from operator import itemgetter
 
 token = os.getenv('statToken')
+
+logger = logging.getLogger('statbot')
+logger.setLevel(logging.DEBUG)
+handler = logging.FileHandler(filename='statbot.log', encoding='utf-8', mode='w')
+handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
+logger.addHandler(handler)
 
 bot = commands.Bot(command_prefix='~')
 
@@ -31,20 +38,20 @@ def get_stat(arg):
 
 @bot.event
 async def on_ready():
-    print("Stat-bot ready!")
-    print("Script started: %s" % r_local.get("startup"))
+    logger.info("Stat-bot ready!")
+    logger.info("Script started: %s", r_local.get("startup"))
 
 
 @bot.command(name='random-user')
 async def random_user(ctx):
     async with ctx.message.channel.typing():
-        print("Picking random user from channel: %s" % ctx.message.channel)
+        logger.info("Picking random user from channel: %s", ctx.message.channel)
         await ctx.send(random.choice(ctx.message.channel.members))
 
 @bot.command(name='random-emote')
 async def random_emote(ctx):
     async with ctx.message.channel.typing():
-        print("Picking random emote!")
+        logger.info("Picking random emote!")
         await ctx.send(random.choice(ctx.guild.emojis))
 
 async def send_emote_usage(emotes, ctx):
@@ -53,19 +60,19 @@ async def send_emote_usage(emotes, ctx):
     for emote, count in sorted(emotes.items(), key=itemgetter(1), reverse=True):
         msg += list_msg_format % (emote, int(count))
     msg += "```"
-    print("Result msg: ", msg)
+    logger.info("Result msg: ", msg)
     await ctx.send(msg)
 
 @bot.command(name='get-stats')
 async def get_stats(ctx, stat: get_stat=StatType.EMOTE, user=None):
     async with ctx.message.channel.typing():
         if len(ctx.message.mentions) == 0:
-            print("Getting global stats")
+            logger.info("Getting global stats")
             result = r_local.hgetall(stat.value)
             await send_emote_usage(result, ctx)
         else:
             for member in ctx.message.mentions:
-                print("Getting member stats for: ", member.id)
+                logger.info("Getting member stats for: ", member.id)
                 result = r_local.hgetall(str(member.id)+":"+stat.value)
                 await send_emote_usage(result, ctx)
 
@@ -92,22 +99,22 @@ async def process_channel(channel, limit=None):
             most_recent_message = message
         await process_message_reactions(message)
     if most_recent_message:
-        print("Most recent message id: %d" % most_recent_message.id)
+        logger.info("Most recent message id: %d", most_recent_message.id)
         r_local.hset("most_recent", channel.id, most_recent_message.id)
 
 @bot.command(name='store-stats')
 @has_role("Bot Admin")
 async def store_stats(ctx):
     async with ctx.message.channel.typing():
-        print("Save db to disk")
+        logger.info("Save db to disk")
         await ctx.send("Saving current db image to disk")
         r_local.save()
-        print("Flushing db")
+        logger.info("Flushing db")
         await ctx.send("Flushing db")
         r_local.flushall()
         for channel in ctx.guild.channels:
             if hasattr(channel, 'history'):
-                print("Processing messages in channel: %s" % channel)
+                logger.info("Processing messages in channel: %s", channel)
                 await ctx.send("Processing messages in channel: %s" % channel)
                 await process_channel(channel)
     await ctx.send("Processed all messages!")
@@ -118,7 +125,7 @@ async def add_stats(ctx):
         for channel in ctx.guild.channels:
             if hasattr(channel, 'history'):
                 last_update_id = r_local.hget("most_recent",channel.id)
-                print("Got ID: %s"%last_update_id)
+                logger.info("Got ID: %s", last_update_id)
                 last_message = None
                 if last_update_id:
                     last_message = await channel.fetch_message(int(last_update_id))
@@ -132,20 +139,21 @@ async def add_stats(ctx):
                             most_recent_message = message
                         await process_message_reactions(message)
                     if most_recent_message:
-                        print("Most recent message id: %d" % most_recent_message.id)
+                        logger.info("Most recent message id: %d", most_recent_message.id)
                         r_local.hset("most_recent", channel.id, most_recent_message.id)
                 else:
                     await process_channel(channel)
     await ctx.send("Processed all messages!")
 
 @bot.command(name='calc-stats')
+@has_role("Bot Admin")
 async def calc_stats(ctx, msg_limit=1000, response_size=50):
     async with ctx.message.channel.typing():
-        print("Starting reaction calculation")
+        logger.info("Starting reaction calculation")
         dict_of_reacts = {}
         for channel in ctx.guild.channels:
             if hasattr(channel, 'history'):
-                print("Processing messages for channel: %s" % channel)
+                logger.info("Processing messages for channel: %s", channel)
                 async for message in channel.history(limit=msg_limit):
                     for reaction in message.reactions:
                         if reaction.custom_emoji:
@@ -169,7 +177,7 @@ async def calc_stats(ctx, msg_limit=1000, response_size=50):
                 mssage = "```"
 
         await ctx.send(mssage+"```")
-    print("Completed stats calculation!")
+    logger.info("Completed stats calculation!")
             
 @random_user.error
 @random_emote.error
